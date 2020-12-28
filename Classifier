@@ -1,0 +1,61 @@
+import torch
+from torchtext import data
+from torchtext import datasets
+import random
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import time
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+SEED = 1234
+torch.manual_seed(SEED)
+torch.cuda.manual_seed(SEED)
+torch.backends.cudnn.deterministic = True
+
+BATCH_SIZE = 64
+EMBEDDING_DIM = 100
+OUTPUT_DIM = 1
+N_EPOCHS = 10
+
+TEXT = data.Field(tokenize='spacy')
+LABEL = data.LabelField(dtype=torch.float)
+
+train_data, test_data = datasets.IMDB.splits(TEXT, LABEL)
+
+train_data, valid_data = train_data.split(random_state=random.seed(SEED))
+
+TEXT.build_vocab(train_data, max_size=25000, vectors="glove.6B.100d", unk_init=torch.Tensor.normal_)
+LABEL.build_vocab(train_data)
+
+class WordAVGModel(nn.Module):
+    def __init__(self, vocab_size, embedding_dim, output_dim, pad_idx):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=pad_idx)
+        self.fc = nn.Linear(embedding_dim, output_dim)
+
+    def forward(self, text):
+        embedded = self.embedding(text) # [sent len, batch size, emb dim]
+        embedded = embedded.permute(1, 0, 2) # [batch size, sent len, emb dim]  #把embed这个三维向量的（0，1，2）维数据 变为（1，0，2）
+        pooled = F.avg_pool2d(embedded, (embedded.shape[1], 1)).squeeze(1) # [batch size, embedding_dim]        #avg_pool2d()--把embed的第二维求平均并把平均值替代其原来的一位数据。再用squeeze进行降维
+        return self.fc(pooled)
+
+INPUT_DIM = len(TEXT.vocab)
+PAD_IDX = TEXT.vocab.stoi[TEXT.pad_token]
+
+model = WordAVGModel(INPUT_DIM, EMBEDDING_DIM, OUTPUT_DIM, PAD_IDX)
+
+model.load_state_dict(torch.load("wordavg-model.pt"))
+
+def predict_sentiment(sentence):
+    tokenized = sentence.split(' ')
+    indexed = [TEXT.vocab.stoi[t] for t in tokenized]
+    tensor = torch.LongTensor(indexed).to(device)
+    tensor = tensor.unsqueeze(1)
+    prediction = torch.sigmoid(model(tensor))
+    if prediction.item()<0.5:
+        return "negative"
+    else:
+        return "positive"
+print(predict_sentiment("I will see this movie again!"))
